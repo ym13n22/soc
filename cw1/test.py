@@ -1,5 +1,6 @@
 import numpy as np
 import logging
+from sklearn.model_selection import train_test_split
 
 LOG_FORMAT = ('%(levelname) -s %(asctime)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -16,15 +17,20 @@ def load_data(file, has_ratings=True):
         return data  # 测试集没有评分列，保持原样
 
 
-def create_rating_matrix(train_data):
-    """ Create a user-item rating matrix """
-    num_users = int(np.max(train_data[:, 0]))
-    num_items = int(np.max(train_data[:, 1]))
+def create_rating_matrix(train_data, test_data):
+    """ Create a user-item rating matrix, ensuring it covers all itemp IDs in test_data """
+    num_users = int(np.max(train_data[:, 0]))  # 计算最大用户 ID
+    num_items_train = int(np.max(train_data[:, 1]))  # 计算训练数据最大 item ID
+    num_items_test = int(np.max(test_data[:, 1])) if test_data is not None else 0  # 计算测试数据最大 item ID
+    num_items = max(num_items_train, num_items_test)  # 选择最大的 item ID 确保矩阵足够大
+
     rating_matrix = np.zeros((num_users, num_items), dtype=np.float32)
     for row in train_data:
         user, item, rating = int(row[0]) - 1, int(row[1]) - 1, row[2]
         rating_matrix[user, item] = rating
+
     return rating_matrix
+
 
 
 def train_model(train_matrix):
@@ -54,7 +60,7 @@ def predict_ratings(test_data, train_matrix, user_sim_matrix, user_mean):
     """ Predict ratings using User-Based CF """
     predictions = []
     for row in test_data:
-        user, item, timestamp = int(row[0]), int(row[1]), int(row[2])
+        user, item, timestamp = int(row[0]), int(row[1]), int(row[3])
         user_idx, item_idx = user - 1, item - 1
         sim_scores = user_sim_matrix[user_idx]
         similar_users = np.where(train_matrix[:, item_idx] > 0)[0]
@@ -69,6 +75,15 @@ def predict_ratings(test_data, train_matrix, user_sim_matrix, user_mean):
     return predictions
 
 
+def evaluate_model(predictions, test_data):
+    """ Compute MAE for evaluation """
+    test_ratings = test_data[:, 2]
+    predicted_ratings = np.array([pred[2] for pred in predictions])
+    mae = np.mean(np.abs(test_ratings - predicted_ratings))
+    logger.info(f'Model MAE: {mae:.4f}')
+    return mae
+
+
 def serialize_predictions(output_file, predictions):
     """ Save predictions to CSV file """
     np.savetxt(output_file, predictions, delimiter=',', fmt=['%d', '%d', '%.2f', '%d'])
@@ -76,9 +91,10 @@ def serialize_predictions(output_file, predictions):
 
 
 if __name__ == '__main__':
-    train_data = load_data('train_100k_withratings.csv')
-    test_data = load_data('test_100k_withoutratings.csv', has_ratings=False)
-    train_matrix = create_rating_matrix(train_data)
+    data = load_data('train_100k_withratings.csv')
+    train_data, test_data = train_test_split(data, test_size=0.2, random_state=42)
+    train_matrix = create_rating_matrix(train_data, test_data)  # 传入 test_data 确保足够的列
     user_sim_matrix, user_mean = train_model(train_matrix)
     predictions = predict_ratings(test_data, train_matrix, user_sim_matrix, user_mean)
+    evaluate_model(predictions, test_data)
     serialize_predictions('submission.csv', predictions)
