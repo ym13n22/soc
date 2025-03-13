@@ -42,12 +42,11 @@ def create_rating_matrix(train_data):
     return rating_matrix
 
 
-
-def train_model(train_matrix):
-    """ Train User-Based CF model by computing user-user similarity matrix using adjusted cosine similarity """
+def train_model(train_matrix, significance_threshold=40, case_amplification=1.3):
+    """ 计算用户-用户相似度矩阵（调整余弦相似度）并优化 """
     num_users = train_matrix.shape[0]
     user_mean = np.true_divide(train_matrix.sum(1), (train_matrix != 0).sum(1))
-    user_mean = np.nan_to_num(user_mean)  # 处理 NaN
+    user_mean = np.nan_to_num(user_mean)
     user_sim_matrix = np.zeros((num_users, num_users), dtype=np.float32)
 
     for u1 in range(num_users):
@@ -56,25 +55,39 @@ def train_model(train_matrix):
                 user_sim_matrix[u1, u2] = 1
                 continue
             common_items = np.where((train_matrix[u1] > 0) & (train_matrix[u2] > 0))[0]
-            if len(common_items) == 0:
+            num_common = len(common_items)
+            if num_common == 0:
                 continue
+
             r_u1, r_u2 = train_matrix[u1, common_items], train_matrix[u2, common_items]
             numerator = np.sum((r_u1 - user_mean[u1]) * (r_u2 - user_mean[u2]))
             denominator = np.sqrt(np.sum((r_u1 - user_mean[u1]) ** 2)) * np.sqrt(np.sum((r_u2 - user_mean[u2]) ** 2))
-            user_sim_matrix[u1, u2] = numerator / denominator if denominator > 0 else 0
+            sim = (numerator / denominator) if denominator > 0 else 0
+
+            # 1. 显著性加权 (Significance Weighting)
+            weight_factor = min(1, num_common / significance_threshold)
+            user_sim_matrix[u1, u2] = sim * weight_factor
+
+            # 2. 案例放大 (Case Amplification)
+            user_sim_matrix[u1, u2] = np.sign(sim) * (abs(user_sim_matrix[u1, u2]) ** case_amplification)
 
     return user_sim_matrix, user_mean
 
 
-def predict_ratings_with_split(test_data, train_matrix, user_sim_matrix, user_mean):
-    """ Predict ratings using User-Based CF """
+def predict_ratings_with_split(test_data, train_matrix, user_sim_matrix, user_mean, similarity_threshold=0.0001,
+                               neighborhood_size=40):
+    """ 使用邻域选择优化的 User-Based CF 进行评分预测 """
     predictions = []
     for row in test_data:
         user, item, timestamp = int(row[0]), int(row[1]), int(row[3])
         user_idx, item_idx = user - 1, item - 1
         sim_scores = user_sim_matrix[user_idx]
         similar_users = np.where(train_matrix[:, item_idx] > 0)[0]
-        valid_users = similar_users[~np.isnan(user_mean[similar_users])]
+
+        # 3. 邻域选择 (Neighborhood Selection)
+        valid_users = similar_users[sim_scores[similar_users] > similarity_threshold]
+        if len(valid_users) > neighborhood_size:
+            valid_users = valid_users[np.argsort(sim_scores[valid_users])[-neighborhood_size:]]
 
         numerator = np.sum(sim_scores[valid_users] * (train_matrix[valid_users, item_idx] - user_mean[valid_users]))
         denominator = np.sum(np.abs(sim_scores[valid_users]))
@@ -83,15 +96,22 @@ def predict_ratings_with_split(test_data, train_matrix, user_sim_matrix, user_me
         predictions.append([user, item, rating_pred, timestamp])
     return predictions
 
-def predict_ratings(test_data, train_matrix, user_sim_matrix, user_mean):
-    """ Predict ratings using User-Based CF """
+
+def predict_ratings(test_data, train_matrix, user_sim_matrix, user_mean, similarity_threshold=0.0001,
+                    neighborhood_size=40):
+    """ 使用用户相似度进行评分预测 """
     predictions = []
+
     for row in test_data:
         user, item, timestamp = int(row[0]), int(row[1]), int(row[2])
         user_idx, item_idx = user - 1, item - 1
         sim_scores = user_sim_matrix[user_idx]
         similar_users = np.where(train_matrix[:, item_idx] > 0)[0]
-        valid_users = similar_users[~np.isnan(user_mean[similar_users])]
+
+        # 3. 邻域选择 (Neighborhood Selection)
+        valid_users = similar_users[sim_scores[similar_users] > similarity_threshold]
+        if len(valid_users) > neighborhood_size:
+            valid_users = valid_users[np.argsort(sim_scores[valid_users])[-neighborhood_size:]]
 
         numerator = np.sum(sim_scores[valid_users] * (train_matrix[valid_users, item_idx] - user_mean[valid_users]))
         denominator = np.sum(np.abs(sim_scores[valid_users]))
