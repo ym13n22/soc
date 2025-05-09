@@ -4,15 +4,17 @@ import pandas as pd
 import os
 from sklearn.model_selection import train_test_split
 
+#create and populate SQLite database from CSV
 def create_db(csvfile_path,db_path):
-    df = pd.read_csv(csvfile_path,header=None, names=["user_id", "item_id","rating", "timestamp"])  # 替换为你的文件路径
+    df = pd.read_csv(csvfile_path,header=None, names=["user_id", "item_id","rating", "timestamp"])
 
+    # Split into training and testing sets
     train_data, test_data = train_test_split(df, test_size=0.2, random_state=42)
 
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(db_path)
     cursor=conn.cursor()
-
+    # Create table for whole data
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS trainTable (
             user_id INTEGER,
@@ -22,6 +24,7 @@ def create_db(csvfile_path,db_path):
         )
     ''')
 
+    # Create table for train data
     cursor.execute('''
             CREATE TABLE IF NOT EXISTS trainTableSplit (
                 user_id INTEGER,
@@ -31,6 +34,7 @@ def create_db(csvfile_path,db_path):
             )
         ''')
 
+    # Create table for test
     cursor.execute('''
             CREATE TABLE IF NOT EXISTS testTableSplit (
                 user_id INTEGER,
@@ -40,6 +44,7 @@ def create_db(csvfile_path,db_path):
             )
         ''')
 
+    #insert data into table
     for row in df.itertuples(index=False):
         cursor.execute("INSERT INTO trainTable (user_id, item_id,rating,timestamp) VALUES (?, ?, ?, ?)",
                        (row.user_id, row.item_id,row.rating, row.timestamp))
@@ -57,7 +62,7 @@ def create_db(csvfile_path,db_path):
 
 
 
-# 1. 加载评分数据（从 SQLite 数据库）
+# Load entire ratings dataset from SQLite and splite into train data and validation data
 def load_ratings(db_path):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -71,7 +76,7 @@ def load_ratings(db_path):
     train_ratings, val_ratings = train_test_split(data, test_size=0.2, random_state=42)
     return train_ratings,val_ratings, max_user + 1, max_item + 1
 
-
+# Load dataset for local test from SQLite, split into train data and validation data
 def load_localTest_ratings(db_path):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -85,9 +90,8 @@ def load_localTest_ratings(db_path):
     train_ratings, val_ratings = train_test_split(data, test_size=0.2, random_state=42)
     return train_ratings,val_ratings, max_user + 1, max_item + 1
 
-
+# Predict and write predictions to CSV
 def predict_test_file(model, test_file_path, output_file_path):
-    # 加载测试数据（CSV），格式为: user_id,item_id,timestamp
     df = pd.read_csv(test_file_path)
 
     # 预测评分
@@ -102,19 +106,18 @@ def predict_test_file(model, test_file_path, output_file_path):
             rating = np.nan  # 或设为模型平均值等
         predictions.append(rating)
 
-    # 插入预测列
+
     df.insert(loc=2, column='predicted_rating', value=predictions)
 
-    # 保存到新文件
+
     df.to_csv(output_file_path, index=False)
     print(f"预测结果已保存到: {output_file_path}")
 
+# Predict and evaluate with the known rating data
 def predict_localtest_sqlite(model, db_path):
-    # 连接数据库
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    # 从表中读取数据
     query = f"SELECT user_id, item_id, rating FROM testTableSplit"
     cursor.execute(query)
     rows = cursor.fetchall()
@@ -134,7 +137,6 @@ def predict_localtest_sqlite(model, db_path):
             # 模型中没有该用户或物品的向量，跳过或处理
             continue
 
-    # 计算 MAE
     if valid_count > 0:
         mae = total_error / valid_count
         print(f"\nMean Absolute Error (MAE): {mae:.4f}")
@@ -144,9 +146,10 @@ def predict_localtest_sqlite(model, db_path):
     # 关闭数据库连接
     conn.close()
 
-
+#train and test the model with known rating data
 def local_test_file(db_path):
     ratings,val_ratings, num_users, num_items = load_localTest_ratings(db_path)
+    '''
 
     print("开始自动调参...")
     best_model, best_config = MatrixFactorization.grid_search_train(
@@ -164,71 +167,93 @@ def local_test_file(db_path):
     # 用最优模型预测测试集
     print("使用最优模型在 testTableSplit 上进行预测并评估...")
     predict_localtest_sqlite(best_model, db_path)
+    '''
 
 
     # 初始化模型
-    #model = MatrixFactorization(num_users, num_items, k=250, lr=0.015, reg=0.035, epochs=50 )
-    #0.6237
-    #50 0.5981
-    #k=50 0.5971
-    #k=100 0.5958 0.6207(10)
-    #k=150 0.5955  0.6188(10)
-    #print("initialize model")
+    model = MatrixFactorization(num_users, num_items, k=500, lr=0.01, reg=0.04, epochs=150 )
     # 训练模型
-    #model.train(ratings,val_ratings)
-    #print("trainModel")
+    model.train(ratings,val_ratings)
+    print("trainModel")
 
-    #predict_localtest_sqlite(model, db_path)
-
-
+    predict_localtest_sqlite(model, db_path)
 
 
-# 2. 矩阵分解实现（使用 SGD）
+
+
+# Matrix Factorization with SGD
 class MatrixFactorization:
     def __init__(self, num_users, num_items, k=20, lr=0.01, reg=0.1, epochs=5):
+        """
+            Initialize the matrix factorization model.
+
+            Parameters:
+            - num_users: Total number of users.
+            - num_items: Total number of items.
+            - k: Number of latent factors.
+            - lr: Learning rate for SGD.
+            - reg: Regularization strength.
+            - epochs: Number of training iterations.
+            """
         self.k = k
         self.lr = lr
         self.reg = reg
         self.epochs = epochs
-
+        # Initialize user and item latent factor matrices with normal distribution
         self.U = np.random.normal(0, 0.1, (num_users, k))
         self.V = np.random.normal(0, 0.1, (num_items, k))
-
+        # Initialize user and item biases
         self.b_u = np.zeros(num_users)
         self.b_i = np.zeros(num_items)
         self.mu = 0
 
-    def train(self, ratings, val_ratings=None, verbose=True, early_stop_rounds=5):
-        self.mu = np.mean([r for _, _, r in ratings])
+    def train(self, ratings, val_ratings=None, verbose=True, early_stop_rounds=20, lr_decay=0.995):
+        """
+            Train the model using stochastic gradient descent.
+
+            Parameters:
+                - ratings: Training dataset (list/array of [user, item, rating]).
+                - val_ratings: Optional validation dataset for monitoring performance.
+                - verbose: If True, print progress info.
+                - early_stop_rounds: Stop early if no improvement for these many rounds.
+                - lr_decay: Factor to decay learning rate each epoch.
+            """
+        self.mu = np.mean([r for _, _, r in ratings])# Compute global mean rating
         best_mae = float('inf')
         no_improve_count = 0
+        current_lr = self.lr# Set current learning rate
 
         for epoch in range(self.epochs):
-            np.random.shuffle(ratings)
+            np.random.shuffle(ratings)# Shuffle training data each epoch
             for user, item, rating in ratings:
                 user = int(user)
                 item = int(item)
-
+                # Get user/item latent vectors and biases
                 p_u = self.U[user]
                 q_i = self.V[item]
                 b_u = self.b_u[user]
                 b_i = self.b_i[item]
-
+                # Predict rating and calculate error
                 pred = self.mu + b_u + b_i + np.dot(p_u, q_i)
                 e_ui = rating - pred
 
-                self.b_u[user] += self.lr * (e_ui - self.reg * b_u)
-                self.b_i[item] += self.lr * (e_ui - self.reg * b_i)
-                self.U[user] += self.lr * (e_ui * q_i - self.reg * p_u)
-                self.V[item] += self.lr * (e_ui * p_u - self.reg * q_i)
+                # Update parameters using stochastic gradient descent
+                self.b_u[user] += current_lr * (e_ui - self.reg * b_u)
+                self.b_i[item] += current_lr * (e_ui - self.reg * b_i)
+                self.U[user] += current_lr * (e_ui * q_i - self.reg * p_u)
+                self.V[item] += current_lr * (e_ui * p_u - self.reg * q_i)
 
+            # Decay the learning rate
+            current_lr *= lr_decay
+            # Validation and early stopping
             if val_ratings is not None:
                 val_mae = self.evaluate(val_ratings)
                 if verbose:
-                    print(f"Epoch {epoch + 1}/{self.epochs} completed. Validation MAE: {val_mae:.4f}")
+                    print(
+                        f"Epoch {epoch + 1}/{self.epochs} completed. Validation MAE: {val_mae:.4f} | lr: {current_lr:.6f}")
 
-                # Early stopping logic
-                if val_mae + 1e-4 < best_mae:  # 加一点容差防止浮动误判
+                # Early stopping
+                if val_mae + 1e-4 < best_mae:
                     best_mae = val_mae
                     no_improve_count = 0
                 else:
@@ -238,12 +263,31 @@ class MatrixFactorization:
                             print(f"⏹️ Early stopping at epoch {epoch + 1} with best MAE {best_mae:.4f}")
                         break
             elif verbose:
-                print(f"Epoch {epoch + 1}/{self.epochs} completed.")
+                print(f"Epoch {epoch + 1}/{self.epochs} completed. | lr: {current_lr:.6f}")
 
     def predict(self, user, item):
+        """
+            Predict the rating of a given user-item pair.
+
+            Parameters:
+                - user: User ID.
+                - item: Item ID.
+
+            Returns:
+                - Predicted rating as a float.
+                """
         return self.mu + self.b_u[user] + self.b_i[item] + np.dot(self.U[user], self.V[item])
 
     def evaluate(self, val_ratings):
+        """
+            Evaluate the model on a validation set using MAE.
+
+            Parameters:
+                - val_ratings: List/array of [user, item, true_rating].
+
+            Returns:
+                - Mean Absolute Error (MAE).
+                """
         errors = []
         for user, item, true_rating in val_ratings:
             try:
@@ -256,6 +300,23 @@ class MatrixFactorization:
     @staticmethod
     def grid_search_train(ratings, val_ratings, num_users, num_items,
                           k_list=[20], lr_list=[0.01], reg_list=[0.1], epochs=5):
+        """
+        Perform grid search over hyperparameters to find the best configuration.
+
+            Parameters:
+                - ratings: Training data.
+                - val_ratings: Validation data.
+                - num_users: Total number of users.
+                - num_items: Total number of items.
+                - k_list: List of latent factor sizes to try.
+                - lr_list: List of learning rates to try.
+                - reg_list: List of regularization terms to try.
+                - epochs: Number of epochs to train each model.
+
+            Returns:
+                - best_model: The model with the best validation MAE.
+                - best_config: Dictionary of best hyperparameter values.
+                """
         best_model = None
         best_config = None
         best_mae = float('inf')
@@ -276,7 +337,7 @@ class MatrixFactorization:
                         best_mae = mae
                         best_model = model
                         best_config = {'k': k, 'lr': lr, 'reg': reg}
-
+        # Display all grid search results
         print("\n📊 All results:")
         for k, lr, reg, mae in results:
             print(f"  k={k:<4} | lr={lr:<6} | reg={reg:<5} => MAE = {mae:.4f}")
@@ -297,19 +358,18 @@ if __name__ == "__main__":
     db_path = "data/20M.db"
     csvfile_path = "train_20M_withratings.csv"
     test_file_path="test_20M_withoutratings.csv"
-    output_file_path="test_20M_withratings.csv"
+    output_file_path="result.csv"
     #create_db(csvfile_path, db_path)
-    local_test_file(db_path)
+    #local_test_file(db_path)
 
     
-    '''
-    ratings, num_users, num_items = load_ratings(db_path)
+
+    ratings,val_ratings, num_users, num_items = load_ratings(db_path)
 
     # 初始化模型
-    model = MatrixFactorization(num_users, num_items, k=30, lr=0.01, reg=0.05, epochs=10)
+    model = MatrixFactorization(num_users, num_items, k=500, lr=0.01, reg=0.04, epochs=150)
 
     # 训练模型
-    model.train(ratings)
+    model.train(ratings, val_ratings)
 
     predict_test_file(model, csvfile_path, db_path)
-'''
